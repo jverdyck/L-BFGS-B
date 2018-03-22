@@ -54,26 +54,43 @@ while ( (get_optimality(x,g,l,u) > tol) && (k < max_iters) )
   g_old = g;
   
   % compute the new search direction
-  [xc, c] = get_cauchy_point(x,g,l,u,theta,W,M);
+  [xc, c] = get_cauchy_point(x,g,l,u,theta,W,M); % g contains inf is oorzaak nans - Jeroen
   [xbar, line_search_flag] = subspace_min(x,g,l,u,xc,c,theta,W,M);
 
-  alpha = 1.0;
-  if (line_search_flag)
-    [alpha] = strong_wolfe(func,x,f,g,xbar-x);
+  % Always perform line search to make sure that the objective function
+  % value decreases monotonically. - Jeroen
+%   alpha = 1.0;
+%   if (line_search_flag)
+  if true
+    [alpha] = strong_wolfe(func,x,f,g,xbar-x,l,u);
   end
   x = x + alpha * (xbar - x);
+  if any(x(2:6)==0) || any(isnan(x)) || any(isinf(x)) % debugging - Jeroen
+      1;
+  end
+  
+  % make sure bounds are respected - Jeroen
+  x = min(x, u);
+  x = max(x, l);
   
   % update the LBFGS data structures
   [f,g] = feval(func, x);
   y = g - g_old;
   s = x - x_old;
-  curv = abs(transpose(s)*y);
-  if (curv < eps)
-    fprintf(' warning: negative curvature detected\n');
-    fprintf('          skipping L-BFGS update\n');
-    k = k+1;
-    continue;
+  % Remove curvature condition, as it too often results in a step being skipped - Jeroen
+%   curv = abs(transpose(s)*y);
+%   if (curv < eps)
+%     fprintf(' warning: negative curvature detected\n');
+%     fprintf('          skipping L-BFGS update\n');
+%     k = k+1;
+%     continue;
+%   end
+  % do not update L-BFGS second order model when y or s contain Inf or NaN elements - Jeroen
+  if any(isinf(y)) || any(isinf(s)) || any(isnan(y)) || any(isnan(s))
+      k = k + 1;
+      continue;
   end
+  
   if (k < m)
     Y = [Y y];
     S = [S s];
@@ -109,9 +126,10 @@ if (k == max_iters)
   fprintf(' warning: maximum number of iterations reached\n')
 end
 
-if ( get_optimality(x,g,l,u) < tol )
-  fprintf(' stopping because convergence tolerance met!\n')
-end
+% do not print normal exit condition - Jeroen
+% if ( get_optimality(x,g,l,u) < tol )
+%   fprintf(' stopping because convergence tolerance met!\n')
+% end
 
 end
 
@@ -210,15 +228,11 @@ function [opt] = get_optimality(x,g,l,u)
 % OUTPUTS:
 %  opt: the inf-norm of the projected gradient.
 
-projected_g = x-g;
-for i=1:length(x)
-  if (projected_g(i) < l(i))
-    projected_g(i) = l(i);
-  elseif (projected_g(i) > u(i))
-    projected_g(i) = u(i);
-  end
-end
-projected_g = projected_g - x;
+projected_g = x - g;
+% project more efficiently - Jeroen
+projected_g = max(projected_g, l);
+projected_g = min(projected_g, u);
+projected_g = x - projected_g;
 opt = max(abs(projected_g));
 
 end
@@ -246,7 +260,7 @@ for i=1:n
   elseif ( g(i) > 0 )
     t(i) = ( x(i) - l(i) ) / g(i);
   else
-    t(i) = realmax;
+    t(i) = Inf;
   end
   if ( t(i) < eps )
     d(i) = 0.0;
@@ -325,7 +339,9 @@ dt_min = max(dt_min, 0);
 t_old = t_old + dt_min;
 for j=i:length(xc)
   idx = F(j);
-  xc(idx) = x(idx) + t_old*d(idx);
+  t_old_d_temp = t_old*d(idx);
+  if isnan(t_old_d_temp); t_old_d_temp = 0; end % - Jeroen
+  xc(idx) = x(idx) + t_old_d_temp;
 end
 c = c + dt_min*p;
 
@@ -424,7 +440,7 @@ end
 
 end
 
-function [alpha] = strong_wolfe(func,x0,f0,g0,p)
+function [alpha] = strong_wolfe(func,x0,f0,g0,p,l,u)
 % function [alpha] = strong_wolfe(func,x0,f0,g0,p)
 % Compute a line search to satisfy the strong Wolfe conditions.
 % Algorithm 3.5. Page 60. "Numerical Optimization". Nocedal & Wright.
@@ -446,27 +462,34 @@ alpha_i = 1;
 f_im1 = f0;
 dphi0 = transpose(g0)*p;
 i = 0;
+% sometimes, algorithm ends up in point where function value is infinite. I
+% am guessing this can only happen if the line search stops prematurely.
+% Therefore, I have removed the iteration based stopping criterion on the
+% line search. - Jeroen
 max_iters = 20;
+% max_iters = Inf;
 
 % search for alpha that satisfies strong-Wolfe conditions
 while true
   
   x = x0 + alpha_i*p;
+  % make sure bounds are respected - Jeroen
+  x = min(x, u);
+  x = max(x, l);
   [f_i,g_i] = feval(func, x);
   if (f_i > f0 + c1*dphi0) || ( (i > 1) && (f_i >= f_im1) )
-    alpha = alpha_zoom(func,x0,f0,g0,p,alpha_im1,alpha_i);
-    break;
+      alpha = alpha_zoom(func,x0,f0,g0,p,alpha_im1,alpha_i,l,u);
+      break;
   end
   dphi = transpose(g_i)*p;
   if ( abs(dphi) <= -c2*dphi0 )
-    alpha = alpha_i;
-    break;
+      alpha = alpha_i;
+      break;
   end
   if ( dphi >= 0 )
-    alpha = alpha_zoom(func,x0,f0,g0,p,alpha_i,alpha_im1);
-    break;
+      alpha = alpha_zoom(func,x0,f0,g0,p,alpha_i,alpha_im1,l,u);
+      break;
   end
-  
   % update
   alpha_im1 = alpha_i;
   f_im1 = f_i;
@@ -483,7 +506,7 @@ end
 
 end
 
-function [alpha] = alpha_zoom(func,x0,f0,g0,p,alpha_lo,alpha_hi)
+function [alpha] = alpha_zoom(func,x0,f0,g0,p,alpha_lo,alpha_hi,l,u)
 % function [alpha] = alpha_zoom(func,x0,f0,g0,p,alpha_lo,alpha_hi)
 % Algorithm 3.6, Page 61. "Numerical Optimization". Nocedal & Wright.
 % INPUTS:
@@ -501,15 +524,26 @@ function [alpha] = alpha_zoom(func,x0,f0,g0,p,alpha_lo,alpha_hi)
 c1 = 1e-4;
 c2 = 0.9;
 i = 0;
+% sometimes, algorithm ends up in point where function value is infinite. I
+% am guessing this can only happen if the line search stops prematurely.
+% Therefore, I have removed the iteration based stopping criterion on the
+% line search. - Jeroen
 max_iters = 20;
+% max_iters = 10000;
 dphi0 = transpose(g0)*p;
 
 while true
   alpha_i = 0.5*(alpha_lo + alpha_hi);
   alpha = alpha_i;
   x = x0 + alpha_i*p;
+  % make sure bounds are respected - Jeroen
+  x = min(x, u);
+  x = max(x, l);
   [f_i,g_i] = feval(func,x);
   x_lo = x0 + alpha_lo*p;
+  % make sure bounds are respected - Jeroen
+  x_lo = min(x_lo, u);
+  x_lo = max(x_lo, l);
   f_lo = feval(func, x_lo);
   if ( (f_i > f0 + c1*alpha_i*dphi0) || ( f_i >= f_lo) )
     alpha_hi = alpha_i;
@@ -526,6 +560,7 @@ while true
   end
   i = i+1;
   if (i > max_iters)
+%     if isinf(f_i); error('Alpha-zoom did not converge!'); end % - Jeroen
     alpha = alpha_i;
     break;
   end
