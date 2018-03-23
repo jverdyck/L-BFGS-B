@@ -65,13 +65,10 @@ while ( (get_optimality(x,g,l,u) > tol) && (k < max_iters) )
     [alpha] = strong_wolfe(func,x,f,g,xbar-x,l,u);
   end
   x = x + alpha * (xbar - x);
-  if any(x(2:6)==0) || any(isnan(x)) || any(isinf(x)) % debugging - Jeroen
-      1;
-  end
   
   % make sure bounds are respected - Jeroen
-  x = min(x, u);
   x = max(x, l);
+  x = min(x, u);
   
   % update the LBFGS data structures
   [f,g] = feval(func, x);
@@ -86,12 +83,13 @@ while ( (get_optimality(x,g,l,u) > tol) && (k < max_iters) )
 %     continue;
 %   end
   % do not update L-BFGS second order model when y or s contain Inf or NaN elements - Jeroen
-  if any(isinf(y)) || any(isinf(s)) || any(isnan(y)) || any(isnan(s))
+  % also, do not update L-BFGS second order model when y==0
+  if any(isinf(y)) || any(isinf(s)) || any(isnan(y)) || any(isnan(s)) || (transpose(y)*s)==0
       k = k + 1;
       continue;
   end
   
-  if (k < m)
+  if (size(Y,2) < m)
     Y = [Y y];
     S = [S s];
   else
@@ -126,7 +124,7 @@ if (k == max_iters)
   fprintf(' warning: maximum number of iterations reached\n')
 end
 
-% do not print normal exit condition - Jeroen
+% % do not print normal exit condition - Jeroen
 % if ( get_optimality(x,g,l,u) < tol )
 %   fprintf(' stopping because convergence tolerance met!\n')
 % end
